@@ -4,26 +4,23 @@ package retrofit.http;
 import java.io.UnsupportedEncodingException;
 import java.net.URLEncoder;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 import retrofit.http.client.Request;
-import retrofit.io.StringTypedBytes;
-import retrofit.io.TypedBytes;
+import retrofit.http.mime.TypedOutput;
+import retrofit.http.mime.TypedString;
 
-import static retrofit.http.RestAdapter.UTF_8;
 import static retrofit.http.RestMethodInfo.NO_SINGLE_ENTITY;
 
 /**
  * Builds HTTP requests from Java method invocations.  Handles "path parameters" in the
  * {@code apiUrl} in the form of "path/to/url/{id}/action" where a parameter annotated with
- * {@code @Named("id")} is inserted into the url.  Note that this replacement can be recursive if:
+ * {@code @Name("id")} is inserted into the url.  Note that this replacement can be recursive if:
  * <ol>
  * <li>Multiple sets of brackets are nested ("path/to/{{key}a}.</li>
- * <li>The order of {@link javax.inject.Named @Named} values go from innermost to outermost.</li>
- * <li>The values replaced correspond to {@link javax.inject.Named @Named} parameters.</li>
+ * <li>The order of {@link Name @Name} values go from innermost to outermost.</li>
+ * <li>The values replaced correspond to {@link Name @Name} parameters.</li>
  * </ol>
  */
 final class RequestBuilder {
@@ -62,11 +59,6 @@ final class RequestBuilder {
   private List<Parameter> createParamList() {
     List<Parameter> params = new ArrayList<Parameter>();
 
-    // Add query parameter(s), if specified.
-    for (QueryParam annotation : methodInfo.pathQueryParams) {
-      params.add(new Parameter(annotation.name(), annotation.value(), String.class));
-    }
-
     // Add arguments as parameters.
     String[] pathNamedParams = methodInfo.namedParams;
     int singleEntityArgumentIndex = methodInfo.singleEntityArgumentIndex;
@@ -95,17 +87,12 @@ final class RequestBuilder {
         }
       }
       if (found != null) {
-        String value;
-        try {
-          value = URLEncoder.encode(String.valueOf(found.getValue()), UTF_8);
-        } catch (UnsupportedEncodingException e) {
-          throw new AssertionError(e);
-        }
+        String value = getUrlEncodedValue(found);
         replacedPath = replacedPath.replace("{" + found.getName() + "}", value);
         paramList.remove(found);
       } else {
         throw new IllegalArgumentException(
-            "URL param " + pathParam + " has no matching method @Named param.");
+            "URL param " + pathParam + " has no matching method @Name param.");
       }
     }
 
@@ -113,7 +100,7 @@ final class RequestBuilder {
       // We're passing a JSON object as the entity: paramList should only contain path param values.
       if (!paramList.isEmpty()) {
         throw new IllegalStateException(
-            "Found @Named param on single-entity request that was not used for path substitution.");
+            "Found @Name param on single-entity request that was not used for path substitution.");
       }
     }
 
@@ -124,39 +111,53 @@ final class RequestBuilder {
     }
     url.append(replacedPath);
 
-    TypedBytes body = null;
-    Map<String, TypedBytes> bodyParams = new LinkedHashMap<String, TypedBytes>();
+    // Add query parameter(s), if specified.
+    for (QueryParam annotation : methodInfo.pathQueryParams) {
+      paramList.add(new Parameter(annotation.name(), annotation.value(), String.class));
+    }
+
+    TypedOutput body = null;
     if (!methodInfo.restMethod.hasBody()) {
       for (int i = 0, count = paramList.size(); i < count; i++) {
         url.append((i == 0) ? '?' : '&');
         Parameter nonPathParam = paramList.get(i);
-        url.append(nonPathParam.getName()).append("=").append(nonPathParam.getValue());
+        String value = getUrlEncodedValue(nonPathParam);
+        url.append(nonPathParam.getName()).append("=").append(value);
       }
     } else if (!paramList.isEmpty()) {
       if (methodInfo.isMultipart) {
+        MultipartTypedOutput multipartBody = new MultipartTypedOutput();
         for (Parameter parameter : paramList) {
           Object value = parameter.getValue();
-          TypedBytes typedBytes;
-          if (value instanceof TypedBytes) {
-            typedBytes = (TypedBytes) value;
+          TypedOutput typedOutput;
+          if (value instanceof TypedOutput) {
+            typedOutput = (TypedOutput) value;
           } else {
-            typedBytes = new StringTypedBytes(value.toString());
+            typedOutput = new TypedString(value.toString());
           }
-          bodyParams.put(parameter.getName(), typedBytes);
+          multipartBody.addPart(parameter.getName(), typedOutput);
         }
+        body = multipartBody;
       } else {
         body = converter.toBody(paramList);
       }
     } else if (methodInfo.singleEntityArgumentIndex != NO_SINGLE_ENTITY) {
       Object singleEntity = args[methodInfo.singleEntityArgumentIndex];
-      if (singleEntity instanceof TypedBytes) {
-        body = (TypedBytes) singleEntity;
+      if (singleEntity instanceof TypedOutput) {
+        body = (TypedOutput) singleEntity;
       } else {
         body = converter.toBody(singleEntity);
       }
     }
 
-    return new Request(methodInfo.restMethod.value(), url.toString(), headers,
-        methodInfo.isMultipart, body, bodyParams);
+    return new Request(methodInfo.restMethod.value(), url.toString(), headers, body);
+  }
+
+  private static String getUrlEncodedValue(Parameter found) {
+    try {
+      return URLEncoder.encode(String.valueOf(found.getValue()), "UTF-8");
+    } catch (UnsupportedEncodingException e) {
+      throw new AssertionError(e);
+    }
   }
 }

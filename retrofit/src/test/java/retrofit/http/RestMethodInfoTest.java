@@ -7,11 +7,10 @@ import java.lang.annotation.Target;
 import java.lang.reflect.Method;
 import java.lang.reflect.Type;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
-import javax.inject.Named;
-import org.junit.Ignore;
 import org.junit.Test;
-import retrofit.io.TypedBytes;
+import retrofit.http.mime.TypedOutput;
 
 import static java.lang.annotation.ElementType.METHOD;
 import static java.lang.annotation.RetentionPolicy.RUNTIME;
@@ -69,7 +68,7 @@ public class RestMethodInfoTest {
 
   @Test public void concreteCallbackTypesWithParams() {
     class Example {
-      @GET("/foo") void a(@Named("id") String id, ResponseCallback cb) {
+      @GET("/foo") void a(@Name("id") String id, ResponseCallback cb) {
       }
     }
 
@@ -93,7 +92,7 @@ public class RestMethodInfoTest {
 
   @Test public void genericCallbackTypesWithParams() {
     class Example {
-      @GET("/foo") void a(@Named("id") String id, Callback<Response> c) {
+      @GET("/foo") void a(@Name("id") String id, Callback<Response> c) {
       }
     }
 
@@ -129,17 +128,21 @@ public class RestMethodInfoTest {
     assertThat(methodInfo.type).isEqualTo(expected);
   }
 
-  @Ignore // TODO support this case!
-  @Test public void extendingGenericCallback() {
+  // RestMethodInfo reconstructs this type from MultimapCallback<String, Set<Long>>. It contains
+  // a little of everything: a parameterized type, a generic array, and a wildcard.
+  private static Map<? extends String, Set<Long>[]> extendingGenericCallbackType;
+
+  @Test public void extendingGenericCallback() throws Exception {
     class Example {
-      @GET("/foo") void a(ExtendingCallback<Response> callback) {
+      @GET("/foo") void a(MultimapCallback<String, Set<Long>> callback) {
       }
     }
 
     Method method = TestingUtils.getMethod(Example.class, "a");
     RestMethodInfo methodInfo = new RestMethodInfo(method);
     assertThat(methodInfo.isSynchronous).isFalse();
-    assertThat(methodInfo.type).isEqualTo(Response.class);
+    assertThat(methodInfo.type).isEqualTo(
+        RestMethodInfoTest.class.getDeclaredField("extendingGenericCallbackType").getGenericType());
   }
 
   @Test public void synchronousResponse() {
@@ -173,7 +176,7 @@ public class RestMethodInfoTest {
   @Test(expected = IllegalArgumentException.class)
   public void missingCallbackTypes() {
     class Example {
-      @GET("/foo") void a(@Named("id") String id) {
+      @GET("/foo") void a(@Name("id") String id) {
       }
     }
 
@@ -422,6 +425,21 @@ public class RestMethodInfoTest {
     assertThat(methodInfo.isMultipart).isFalse();
   }
 
+  @Test(expected = IllegalStateException.class)
+  public void noQueryParamsInUrl() {
+    class Example {
+      @GET("/foo/{bar}/")
+      @QueryParam(name = "bar", value = "baz")
+      Response a() {
+        return null;
+      }
+    }
+
+    Method method = TestingUtils.getMethod(Example.class, "a");
+    RestMethodInfo methodInfo = new RestMethodInfo(method);
+    methodInfo.init();
+  }
+
   @Test public void emptyParams() {
     class Example {
       @GET("/") Response a() {
@@ -440,7 +458,7 @@ public class RestMethodInfoTest {
 
   @Test public void singleParam() {
     class Example {
-      @GET("/") Response a(@Named("a") String a) {
+      @GET("/") Response a(@Name("a") String a) {
         return null;
       }
     }
@@ -456,7 +474,7 @@ public class RestMethodInfoTest {
 
   @Test public void multipleParams() {
     class Example {
-      @GET("/") Response a(@Named("a") String a, @Named("b") String b, @Named("c") String c) {
+      @GET("/") Response a(@Name("a") String a, @Name("b") String b, @Name("c") String c) {
         return null;
       }
     }
@@ -487,7 +505,7 @@ public class RestMethodInfoTest {
 
   @Test public void singleParamWithCallback() {
     class Example {
-      @GET("/") void a(@Named("a") String a, ResponseCallback cb) {
+      @GET("/") void a(@Name("a") String a, ResponseCallback cb) {
       }
     }
 
@@ -502,7 +520,7 @@ public class RestMethodInfoTest {
 
   @Test public void multipleParamsWithCallback() {
     class Example {
-      @GET("/") void a(@Named("a") String a, @Named("b") String b, ResponseCallback cb) {
+      @GET("/") void a(@Name("a") String a, @Name("b") String b, ResponseCallback cb) {
       }
     }
 
@@ -534,7 +552,7 @@ public class RestMethodInfoTest {
 
   @Test public void singleEntityTypedBytes() {
     class Example {
-      @PUT("/") Response a(@SingleEntity TypedBytes o) {
+      @PUT("/") Response a(@SingleEntity TypedOutput o) {
         return null;
       }
     }
@@ -580,7 +598,7 @@ public class RestMethodInfoTest {
 
   @Test public void singleEntityWithNamed() {
     class Example {
-      @PUT("/{a}/{c}") Response a(@Named("a") int a, @SingleEntity int b, @Named("c") int c) {
+      @PUT("/{a}/{c}") Response a(@Name("a") int a, @SingleEntity int b, @Name("c") int c) {
         return null;
       }
     }
@@ -595,7 +613,7 @@ public class RestMethodInfoTest {
 
   @Test public void singleEntityWithNamedAndCallback() {
     class Example {
-      @PUT("/{a}") void a(@Named("a") int a, @SingleEntity int b, ResponseCallback cb) {
+      @PUT("/{a}") void a(@Name("a") int a, @SingleEntity int b, ResponseCallback cb) {
       }
     }
 
@@ -611,7 +629,7 @@ public class RestMethodInfoTest {
   @Test(expected = IllegalStateException.class)
   public void nonPathParamAndSingleEntity() {
     class Example {
-      @PUT("/") Response a(@Named("a") int a, @SingleEntity int b) {
+      @PUT("/") Response a(@Name("a") int a, @SingleEntity int b) {
         return null;
       }
     }
@@ -624,7 +642,7 @@ public class RestMethodInfoTest {
   @Test(expected = IllegalStateException.class)
   public void typedBytesUrlParam() {
     class Example {
-      @GET("/{a}") Response a(@Named("a") TypedBytes m) {
+      @GET("/{a}") Response a(@Name("a") TypedOutput m) {
         return null;
       }
     }
@@ -637,7 +655,7 @@ public class RestMethodInfoTest {
   @Test(expected = IllegalStateException.class)
   public void pathParamNonPathParamAndTypedBytes() {
     class Example {
-      @PUT("/{a}") Response a(@Named("a") int a, @Named("b") int b, @SingleEntity int c) {
+      @PUT("/{a}") Response a(@Name("a") int a, @Name("b") int b, @SingleEntity int c) {
         return null;
       }
     }
@@ -676,7 +694,7 @@ public class RestMethodInfoTest {
   @Test(expected = IllegalStateException.class)
   public void nonBodyHttpMethodWithTypedBytes() {
     class Example {
-      @GET("/") Response a(@Named("a") TypedBytes a) {
+      @GET("/") Response a(@Name("a") TypedOutput a) {
         return null;
       }
     }
@@ -689,7 +707,7 @@ public class RestMethodInfoTest {
   @Test public void simpleMultipart() {
     class Example {
       @Multipart @PUT("/")
-      Response a(@Named("a") TypedBytes a) {
+      Response a(@Name("a") TypedOutput a) {
         return null;
       }
     }
@@ -704,7 +722,7 @@ public class RestMethodInfoTest {
   @Test public void twoTypedBytesMultipart() {
     class Example {
       @Multipart @PUT("/")
-      Response a(@Named("a") TypedBytes a, @Named("b") TypedBytes b) {
+      Response a(@Name("a") TypedOutput a, @Name("b") TypedOutput b) {
         return null;
       }
     }
@@ -719,7 +737,7 @@ public class RestMethodInfoTest {
   @Test public void twoTypesMultipart() {
     class Example {
       @Multipart @PUT("/")
-      Response a(@Named("a") TypedBytes a, @Named("b") int b) {
+      Response a(@Name("a") TypedOutput a, @Name("b") int b) {
         return null;
       }
     }
@@ -734,7 +752,7 @@ public class RestMethodInfoTest {
   @Test(expected = IllegalStateException.class)
   public void implicitMultipartForbidden() {
     class Example {
-      @POST("/") Response a(@Named("a") int a) {
+      @POST("/") Response a(@Name("a") int a) {
         return null;
       }
     }
@@ -763,6 +781,6 @@ public class RestMethodInfoTest {
   private static interface ResponseCallback extends Callback<Response> {
   }
 
-  private static interface ExtendingCallback<T> extends Callback<T> {
+  private static interface MultimapCallback<K, V> extends Callback<Map<? extends K, V[]>> {
   }
 }

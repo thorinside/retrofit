@@ -1,19 +1,20 @@
 package retrofit.http;
 
+import android.os.Build;
 import android.os.Process;
+import android.util.Log;
 import com.google.gson.Gson;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadFactory;
-import java.util.concurrent.atomic.AtomicInteger;
-import javax.inject.Provider;
-import retrofit.android.AndroidApacheClient;
-import retrofit.android.MainThreadExecutor;
-import retrofit.http.client.ApacheClient;
+import retrofit.http.android.AndroidApacheClient;
+import retrofit.http.android.MainThreadExecutor;
 import retrofit.http.client.Client;
+import retrofit.http.client.UrlConnectionClient;
 
 import static android.os.Process.THREAD_PRIORITY_BACKGROUND;
-import static retrofit.http.RestAdapter.THREAD_PREFIX;
+import static java.lang.Thread.MIN_PRIORITY;
+import static retrofit.http.RestAdapter.IDLE_THREAD_NAME;
 import static retrofit.http.Utils.SynchronousExecutor;
 
 abstract class Platform {
@@ -35,15 +36,16 @@ abstract class Platform {
   Converter defaultConverter() {
     return new GsonConverter(new Gson());
   }
-  abstract Provider<Client> defaultClient();
+  abstract Client.Provider defaultClient();
   abstract Executor defaultHttpExecutor();
   abstract Executor defaultCallbackExecutor();
+  abstract RestAdapter.Log defaultLog();
 
   /** Provides sane defaults for operation on the JVM. */
   private static class Base extends Platform {
-    @Override Provider<Client> defaultClient() {
-      final Client client = new ApacheClient();
-      return new Provider<Client>() {
+    @Override Client.Provider defaultClient() {
+      final Client client = new UrlConnectionClient();
+      return new Client.Provider() {
         @Override public Client get() {
           return client;
         }
@@ -52,15 +54,13 @@ abstract class Platform {
 
     @Override Executor defaultHttpExecutor() {
       return Executors.newCachedThreadPool(new ThreadFactory() {
-        private final AtomicInteger threadCounter = new AtomicInteger();
-
         @Override public Thread newThread(final Runnable r) {
           return new Thread(new Runnable() {
             @Override public void run() {
-              Thread.currentThread().setPriority(THREAD_PRIORITY_BACKGROUND);
+              Thread.currentThread().setPriority(MIN_PRIORITY);
               r.run();
             }
-          }, THREAD_PREFIX + threadCounter.getAndIncrement());
+          }, IDLE_THREAD_NAME);
         }
       });
     }
@@ -68,13 +68,26 @@ abstract class Platform {
     @Override Executor defaultCallbackExecutor() {
       return new SynchronousExecutor();
     }
+
+    @Override RestAdapter.Log defaultLog() {
+      return new RestAdapter.Log() {
+        @Override public void log(String message) {
+          System.out.println(message);
+        }
+      };
+    }
   }
 
   /** Provides sane defaults for operation on Android. */
   private static class Android extends Platform {
-    @Override Provider<Client> defaultClient() {
-      final Client client = new AndroidApacheClient();
-      return new Provider<Client>() {
+    @Override Client.Provider defaultClient() {
+      final Client client;
+      if (Build.VERSION.SDK_INT < Build.VERSION_CODES.GINGERBREAD) {
+        client = new AndroidApacheClient();
+      } else {
+        client = new UrlConnectionClient();
+      }
+      return new Client.Provider() {
         @Override public Client get() {
           return client;
         }
@@ -83,21 +96,27 @@ abstract class Platform {
 
     @Override Executor defaultHttpExecutor() {
       return Executors.newCachedThreadPool(new ThreadFactory() {
-        private final AtomicInteger threadCounter = new AtomicInteger();
-
         @Override public Thread newThread(final Runnable r) {
           return new Thread(new Runnable() {
             @Override public void run() {
               Process.setThreadPriority(THREAD_PRIORITY_BACKGROUND);
               r.run();
             }
-          }, THREAD_PREFIX + threadCounter.getAndIncrement());
+          }, IDLE_THREAD_NAME);
         }
       });
     }
 
     @Override Executor defaultCallbackExecutor() {
       return new MainThreadExecutor();
+    }
+
+    @Override RestAdapter.Log defaultLog() {
+      return new RestAdapter.Log() {
+        @Override public void log(String message) {
+          Log.d("Retrofit", message);
+        }
+      };
     }
   }
 }

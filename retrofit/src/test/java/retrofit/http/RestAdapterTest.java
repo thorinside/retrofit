@@ -10,11 +10,13 @@ import org.junit.Test;
 import retrofit.http.client.Client;
 import retrofit.http.client.Request;
 import retrofit.http.client.Response;
+import retrofit.http.mime.TypedString;
 
 import static org.fest.assertions.api.Assertions.assertThat;
 import static org.fest.assertions.api.Assertions.fail;
 import static org.mockito.Matchers.any;
 import static org.mockito.Matchers.anyInt;
+import static org.mockito.Matchers.anyString;
 import static org.mockito.Matchers.eq;
 import static org.mockito.Matchers.same;
 import static org.mockito.Mockito.mock;
@@ -87,28 +89,29 @@ public class RestAdapterTest {
   }
 
   @Test public void asynchronousUsesExecutors() throws Exception {
+    Response response = new Response(200, "OK", NO_HEADERS, new TypedString("{}"));
     when(mockClient.execute(any(Request.class))) //
-        .thenReturn(new Response(200, "OK", NO_HEADERS, null));
+        .thenReturn(response);
     Callback<Object> callback = mock(Callback.class);
 
     example.something(callback);
 
     verify(mockRequestExecutor).execute(any(CallbackRunnable.class));
     verify(mockCallbackExecutor).execute(any(Runnable.class));
-    verify(callback).success(eq(null));
+    verify(callback).success(anyString(), same(response));
   }
 
   @Test public void malformedResponseThrowsConversionException() throws Exception {
     when(mockClient.execute(any(Request.class))) //
-        .thenReturn(new Response(200, "OK", NO_HEADERS, "{".getBytes("UTF-8")));
+        .thenReturn(new Response(200, "OK", NO_HEADERS, new TypedString("{")));
 
     try {
       example.something();
       fail("RetrofitError expected on malformed response body.");
     } catch (RetrofitError e) {
       assertThat(e.getResponse().getStatus()).isEqualTo(200);
-      assertThat(e.getException()).isInstanceOf(ConversionException.class);
-      assertThat(e.getResponse().getBody()).isEqualTo("{".getBytes("UTF-8"));
+      assertThat(e.getCause()).isInstanceOf(ConversionException.class);
+      assertThat(e.getResponse().getBody()).isNull();
     }
   }
 
@@ -132,7 +135,7 @@ public class RestAdapterTest {
       example.something();
       fail("RetrofitError expected when client throws exception.");
     } catch (RetrofitError e) {
-      assertThat(e.getException()).isSameAs(exception);
+      assertThat(e.getCause()).isSameAs(exception);
     }
   }
 
@@ -144,7 +147,7 @@ public class RestAdapterTest {
       example.something();
       fail("RetrofitError expected when unexpected exception thrown.");
     } catch (RetrofitError e) {
-      assertThat(e.getException()).isSameAs(exception);
+      assertThat(e.getCause()).isSameAs(exception);
     }
   }
 
@@ -165,6 +168,6 @@ public class RestAdapterTest {
 
     verify(mockRequestExecutor).execute(any(CallbackRunnable.class));
     verify(mockCallbackExecutor).execute(any(Runnable.class));
-    verify(callback).success(eq(response));
+    verify(callback).success(eq(response), same(response));
   }
 }

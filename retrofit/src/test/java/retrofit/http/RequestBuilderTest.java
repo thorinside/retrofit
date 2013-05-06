@@ -8,12 +8,14 @@ import java.lang.reflect.Method;
 import java.net.URISyntaxException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import org.junit.Test;
 import retrofit.http.client.Request;
-import retrofit.io.StringTypedBytes;
-import retrofit.io.TypedBytes;
+import retrofit.http.mime.TypedOutput;
+import retrofit.http.mime.TypedString;
 
 import static org.fest.assertions.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
@@ -31,7 +33,6 @@ public class RequestBuilderTest {
     assertThat(request.getHeaders()).isEmpty();
     assertThat(request.getUrl()).isEqualTo("http://example.com/foo/bar/");
     assertThat(request.getBody()).isNull();
-    assertThat(request.getBodyParameters()).isEmpty();
   }
 
   @Test public void getWithPathParam() throws Exception {
@@ -45,7 +46,6 @@ public class RequestBuilderTest {
     assertThat(request.getHeaders()).isEmpty();
     assertThat(request.getUrl()).isEqualTo("http://example.com/foo/bar/pong/");
     assertThat(request.getBody()).isNull();
-    assertThat(request.getBodyParameters()).isEmpty();
   }
 
   @Test public void getWithQueryParam() throws Exception {
@@ -59,7 +59,6 @@ public class RequestBuilderTest {
     assertThat(request.getHeaders()).isEmpty();
     assertThat(request.getUrl()).isEqualTo("http://example.com/foo/bar/?ping=pong");
     assertThat(request.getBody()).isNull();
-    assertThat(request.getBodyParameters()).isEmpty();
   }
 
   @Test public void getWithPathAndQueryParam() throws Exception {
@@ -75,7 +74,48 @@ public class RequestBuilderTest {
     assertThat(request.getHeaders()).isEmpty();
     assertThat(request.getUrl()).isEqualTo("http://example.com/foo/bar/pong/?kit=kat&riff=raff");
     assertThat(request.getBody()).isNull();
-    assertThat(request.getBodyParameters()).isEmpty();
+  }
+
+  @Test public void getWithPathAndQueryQuestionMarkParam() throws Exception {
+    Request request = new Helper() //
+        .setMethod("GET") //
+        .setUrl("http://example.com") //
+        .setPath("/foo/bar/{ping}/") //
+        .addNamedParam("ping", "pong?") //
+        .addNamedParam("kit", "kat?") //
+        .build();
+    assertThat(request.getMethod()).isEqualTo("GET");
+    assertThat(request.getHeaders()).isEmpty();
+    assertThat(request.getUrl()).isEqualTo("http://example.com/foo/bar/pong%3F/?kit=kat%3F");
+    assertThat(request.getBody()).isNull();
+  }
+
+  @Test public void getWithPathAndQueryAmpersandParam() throws Exception {
+    Request request = new Helper() //
+        .setMethod("GET") //
+        .setUrl("http://example.com") //
+        .setPath("/foo/bar/{ping}/") //
+        .addNamedParam("ping", "pong&") //
+        .addNamedParam("kit", "kat&") //
+        .build();
+    assertThat(request.getMethod()).isEqualTo("GET");
+    assertThat(request.getHeaders()).isEmpty();
+    assertThat(request.getUrl()).isEqualTo("http://example.com/foo/bar/pong%26/?kit=kat%26");
+    assertThat(request.getBody()).isNull();
+  }
+
+  @Test public void getWithPathAndQueryHashParam() throws Exception {
+    Request request = new Helper() //
+        .setMethod("GET") //
+        .setUrl("http://example.com") //
+        .setPath("/foo/bar/{ping}/") //
+        .addNamedParam("ping", "pong#") //
+        .addNamedParam("kit", "kat#") //
+        .build();
+    assertThat(request.getMethod()).isEqualTo("GET");
+    assertThat(request.getHeaders()).isEmpty();
+    assertThat(request.getUrl()).isEqualTo("http://example.com/foo/bar/pong%23/?kit=kat%23");
+    assertThat(request.getBody()).isNull();
   }
 
   @Test public void getWithPathAndQueryParamAsync() throws Exception {
@@ -91,7 +131,6 @@ public class RequestBuilderTest {
     assertThat(request.getHeaders()).isEmpty();
     assertThat(request.getUrl()).isEqualTo("http://example.com/foo/bar/pong/?kit=kat");
     assertThat(request.getBody()).isNull();
-    assertThat(request.getBodyParameters()).isEmpty();
   }
 
   @Test public void normalPost() throws Exception {
@@ -105,7 +144,6 @@ public class RequestBuilderTest {
     assertThat(request.getHeaders()).isEmpty();
     assertThat(request.getUrl()).isEqualTo("http://example.com/foo/bar/");
     assertThat(request.getBody()).isNull();
-    assertThat(request.getBodyParameters()).isEmpty();
   }
 
   @Test public void normalPostWithPathParam() throws Exception {
@@ -120,7 +158,6 @@ public class RequestBuilderTest {
     assertThat(request.getHeaders()).isEmpty();
     assertThat(request.getUrl()).isEqualTo("http://example.com/foo/bar/pong/");
     assertThat(request.getBody()).isNull();
-    assertThat(request.getBodyParameters()).isEmpty();
   }
 
   @Test public void singleEntity() throws Exception {
@@ -135,7 +172,6 @@ public class RequestBuilderTest {
     assertThat(request.getHeaders()).isEmpty();
     assertThat(request.getUrl()).isEqualTo("http://example.com/foo/bar/");
     assertTypedBytes(request.getBody(), "[\"quick\",\"brown\",\"fox\"]");
-    assertThat(request.getBodyParameters()).isEmpty();
   }
 
   @Test public void singleEntityWithPathParams() throws Exception {
@@ -152,7 +188,6 @@ public class RequestBuilderTest {
     assertThat(request.getHeaders()).isEmpty();
     assertThat(request.getUrl()).isEqualTo("http://example.com/foo/bar/pong/kat/");
     assertTypedBytes(request.getBody(), "[\"quick\",\"brown\",\"fox\"]");
-    assertThat(request.getBodyParameters()).isEmpty();
   }
 
   @Test public void singleEntityWithPathParamsAsync() throws Exception {
@@ -170,7 +205,6 @@ public class RequestBuilderTest {
     assertThat(request.getHeaders()).isEmpty();
     assertThat(request.getUrl()).isEqualTo("http://example.com/foo/bar/pong/kat/");
     assertTypedBytes(request.getBody(), "[\"quick\",\"brown\",\"fox\"]");
-    assertThat(request.getBodyParameters()).isEmpty();
   }
 
   @Test public void simpleMultipart() throws Exception {
@@ -180,16 +214,23 @@ public class RequestBuilderTest {
         .setUrl("http://example.com") //
         .setPath("/foo/bar/") //
         .addNamedParam("ping", "pong") //
-        .addNamedParam("kit", new StringTypedBytes("kat")) //
+        .addNamedParam("kit", new TypedString("kat")) //
         .setMultipart() //
         .build();
     assertThat(request.getMethod()).isEqualTo("POST");
     assertThat(request.getHeaders()).isEmpty();
     assertThat(request.getUrl()).isEqualTo("http://example.com/foo/bar/");
-    assertThat(request.getBody()).isNull();
-    assertThat(request.getBodyParameters()).hasSize(2);
-    assertTypedBytes(request.getBodyParameters().get("ping"), "pong");
-    assertTypedBytes(request.getBodyParameters().get("kit"), "kat");
+
+    MultipartTypedOutput body = (MultipartTypedOutput) request.getBody();
+    assertThat(body.parts).hasSize(2);
+
+    Iterator<byte[]> iterator = body.parts.iterator();
+
+    String one = new String(iterator.next(), "UTF-8");
+    assertThat(one).contains("ping").contains("pong");
+
+    String two = new String(iterator.next(), "UTF-8");
+    assertThat(two).contains("kit").contains("kat");
   }
 
   @Test public void simpleHeaders() throws Exception {
@@ -205,7 +246,6 @@ public class RequestBuilderTest {
         .containsExactly(new Header("ping", "pong"), new Header("kit", "kat"));
     assertThat(request.getUrl()).isEqualTo("http://example.com/foo/bar/");
     assertThat(request.getBody()).isNull();
-    assertThat(request.getBodyParameters()).isEmpty();
   }
 
   @Test public void noDuplicateSlashes() throws Exception {
@@ -217,7 +257,7 @@ public class RequestBuilderTest {
     assertThat(request.getUrl()).isEqualTo("http://example.com/foo/bar/");
   }
 
-  private static void assertTypedBytes(TypedBytes bytes, String expected) throws IOException {
+  private static void assertTypedBytes(TypedOutput bytes, String expected) throws IOException {
     assertThat(bytes).isNotNull();
     ByteArrayOutputStream baos = new ByteArrayOutputStream();
     bytes.writeTo(baos);
@@ -282,7 +322,8 @@ public class RequestBuilderTest {
       if (singleEntityArgumentIndex != NO_SINGLE_ENTITY) {
         throw new IllegalStateException("Single entity param already added.");
       }
-      singleEntityArgumentIndex = namedParams.size(); // Relying on the fact that this is already less one.
+      // Relying on the fact that this is already less one.
+      singleEntityArgumentIndex = namedParams.size();
       namedParams.add(null);
       args.add(value);
       return this;
@@ -334,7 +375,7 @@ public class RequestBuilderTest {
       methodInfo.isMultipart = isMultipart;
       methodInfo.loaded = true;
 
-      return new RequestBuilder(GSON)
+      return new RequestBuilder(GSON) //
           .setApiUrl(url)
           .setHeaders(headers)
           .setArgs(args.toArray(new Object[args.size()]))

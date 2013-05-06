@@ -9,7 +9,6 @@ import java.io.OutputStream;
 import java.net.URI;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 import org.apache.http.HttpEntity;
 import org.apache.http.HttpResponse;
 import org.apache.http.StatusLine;
@@ -17,16 +16,12 @@ import org.apache.http.client.HttpClient;
 import org.apache.http.client.methods.HttpEntityEnclosingRequestBase;
 import org.apache.http.client.methods.HttpUriRequest;
 import org.apache.http.entity.AbstractHttpEntity;
-import org.apache.http.entity.mime.MIME;
-import org.apache.http.entity.mime.MultipartEntity;
-import org.apache.http.entity.mime.content.AbstractContentBody;
 import org.apache.http.impl.client.DefaultHttpClient;
 import org.apache.http.message.BasicHeader;
 import org.apache.http.util.EntityUtils;
 import retrofit.http.Header;
-import retrofit.io.TypedBytes;
-
-import static org.apache.http.entity.mime.HttpMultipartMode.BROWSER_COMPATIBLE;
+import retrofit.http.mime.TypedByteArray;
+import retrofit.http.mime.TypedOutput;
 
 /** A {@link Client} which uses an implementation of Apache's {@link HttpClient}. */
 public class ApacheClient implements Client {
@@ -42,23 +37,14 @@ public class ApacheClient implements Client {
   }
 
   @Override public Response execute(Request request) throws IOException {
-    // Create and prepare the Apache request object.
     HttpUriRequest apacheRequest = createRequest(request);
-    prepareRequest(apacheRequest);
-
-    // Obtain and prepare the Apache response object.
-    HttpResponse apacheResponse = client.execute(apacheRequest);
-    prepareResponse(apacheResponse);
-
+    HttpResponse apacheResponse = execute(client, apacheRequest);
     return parseResponse(apacheResponse);
   }
 
-  /** Callback for additional preparation of the request before execution. */
-  protected void prepareRequest(HttpUriRequest request) {
-  }
-
-  /** Callback for additional preparation of the response before parsing. */
-  protected void prepareResponse(HttpResponse response) {
+  /** Execute the specified {@code request} using the provided {@code client}. */
+  protected HttpResponse execute(HttpClient client, HttpUriRequest request) throws IOException {
+    return client.execute(request);
   }
 
   static HttpUriRequest createRequest(Request request) {
@@ -71,14 +57,21 @@ public class ApacheClient implements Client {
     String reason = statusLine.getReasonPhrase();
 
     List<Header> headers = new ArrayList<Header>();
+    String contentType = "application/octet-stream";
     for (org.apache.http.Header header : response.getAllHeaders()) {
-      headers.add(new Header(header.getName(), header.getValue()));
+      String name = header.getName();
+      String value = header.getValue();
+      if ("Content-Type".equalsIgnoreCase(name)) {
+        contentType = value;
+      }
+      headers.add(new Header(name, value));
     }
 
-    byte[] body = null;
+    TypedByteArray body = null;
     HttpEntity entity = response.getEntity();
     if (entity != null) {
-      body = EntityUtils.toByteArray(entity);
+      byte[] bytes = EntityUtils.toByteArray(entity);
+      body = new TypedByteArray(contentType, bytes);
     }
 
     return new Response(status, reason, headers, body);
@@ -98,21 +91,9 @@ public class ApacheClient implements Client {
       }
 
       // Add the content body, if any.
-      if (!request.isMultipart()) {
-        TypedBytes body = request.getBody();
-        if (body != null) {
-          setEntity(new TypedBytesEntity(body));
-        }
-      } else {
-        Map<String, TypedBytes> bodyParameters = request.getBodyParameters();
-        if (bodyParameters != null && !bodyParameters.isEmpty()) {
-          MultipartEntity entity = new MultipartEntity(BROWSER_COMPATIBLE);
-          for (Map.Entry<String, TypedBytes> entry : bodyParameters.entrySet()) {
-            String key = entry.getKey();
-            entity.addPart(key, new TypedBytesBody(entry.getValue(), key));
-          }
-          setEntity(entity);
-        }
+      TypedOutput body = request.getBody();
+      if (body != null) {
+        setEntity(new TypedOutputEntity(body));
       }
     }
 
@@ -121,49 +102,13 @@ public class ApacheClient implements Client {
     }
   }
 
-  /** Adapts ContentBody to TypedBytes. */
-  private static class TypedBytesBody extends AbstractContentBody {
-    private final TypedBytes typedBytes;
+  /** Container class for passing an entire {@link TypedOutput} as an {@link HttpEntity}. */
+  static class TypedOutputEntity extends AbstractHttpEntity {
+    final TypedOutput typedOutput;
 
-    TypedBytesBody(TypedBytes typedBytes, String baseName) {
-      super(typedBytes.mimeType());
-      this.typedBytes = typedBytes;
-    }
-
-    @Override public long getContentLength() {
-      return typedBytes.length();
-    }
-
-    @Override public String getFilename() {
-      return null;
-    }
-
-    @Override public String getCharset() {
-      return null;
-    }
-
-    @Override public String getTransferEncoding() {
-      return MIME.ENC_BINARY;
-    }
-
-    @Override public void writeTo(OutputStream out) throws IOException {
-      // Note: We probably want to differentiate I/O errors that occur while reading a file from
-      // network errors. Network operations can be retried. File operations will probably continue
-      // to fail.
-      //
-      // In the case of photo uploads, we at least check that the file exists before we even try to
-      // upload it.
-      typedBytes.writeTo(out);
-    }
-  }
-
-  /** Container class for passing an entire {@link TypedBytes} as an HTTP request. */
-  static class TypedBytesEntity extends AbstractHttpEntity {
-    private final TypedBytes typedBytes;
-
-    TypedBytesEntity(TypedBytes typedBytes) {
-      this.typedBytes = typedBytes;
-      setContentType(typedBytes.mimeType());
+    TypedOutputEntity(TypedOutput typedOutput) {
+      this.typedOutput = typedOutput;
+      setContentType(typedOutput.mimeType());
     }
 
     @Override public boolean isRepeatable() {
@@ -171,17 +116,17 @@ public class ApacheClient implements Client {
     }
 
     @Override public long getContentLength() {
-      return typedBytes.length();
+      return typedOutput.length();
     }
 
     @Override public InputStream getContent() throws IOException {
       ByteArrayOutputStream out = new ByteArrayOutputStream();
-      typedBytes.writeTo(out);
+      typedOutput.writeTo(out);
       return new ByteArrayInputStream(out.toByteArray());
     }
 
     @Override public void writeTo(OutputStream out) throws IOException {
-      typedBytes.writeTo(out);
+      typedOutput.writeTo(out);
     }
 
     @Override public boolean isStreaming() {

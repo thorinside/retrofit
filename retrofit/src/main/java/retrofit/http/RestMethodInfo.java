@@ -10,8 +10,7 @@ import java.util.LinkedHashSet;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import javax.inject.Named;
-import retrofit.io.TypedBytes;
+import retrofit.http.mime.TypedOutput;
 
 /** Cached details about an interface method. */
 final class RestMethodInfo {
@@ -104,6 +103,12 @@ final class RestMethodInfo {
     }
     if (pathQueryParams == null) {
       pathQueryParams = new QueryParam[0];
+    } else {
+      for (QueryParam pathQueryParam : pathQueryParams) {
+        if (pathParams.contains(pathQueryParam.name())) {
+          throw new IllegalStateException("Query parameters cannot be present in URL.");
+        }
+      }
     }
   }
 
@@ -145,7 +150,7 @@ final class RestMethodInfo {
       return true;
     }
 
-    lastArgType = Utils.getGenericSupertype(lastArgType, lastArgClass, Callback.class);
+    lastArgType = Types.getSupertype(lastArgType, Types.getRawType(lastArgType), Callback.class);
     if (lastArgType instanceof ParameterizedType) {
       Type[] types = ((ParameterizedType) lastArgType).getActualTypeArguments();
       for (int i = 0; i < types.length; i++) {
@@ -183,12 +188,12 @@ final class RestMethodInfo {
       }
       for (Annotation parameterAnnotation : parameterAnnotations) {
         Class<? extends Annotation> annotationType = parameterAnnotation.annotationType();
-        if (annotationType == Named.class) {
-          String name = ((Named) parameterAnnotation).value();
+        if (annotationType == Name.class) {
+          String name = ((Name) parameterAnnotation).value();
           namedParams[i] = name;
           boolean isPathParam = pathParams.contains(name);
-          if (parameterType == TypedBytes.class && (isPathParam || !restMethod.hasBody())) {
-            throw new IllegalStateException("TypedBytes cannot be used as URL parameter.");
+          if (parameterType == TypedOutput.class && (isPathParam || !restMethod.hasBody())) {
+            throw new IllegalStateException("TypedOutput cannot be used as URL parameter.");
           }
           if (!isPathParam && !isMultipart && restMethod.hasBody()) {
             throw new IllegalStateException(
@@ -220,7 +225,7 @@ final class RestMethodInfo {
     }
     if (!restMethod.hasBody() && (isMultipart || singleEntityArgumentIndex != NO_SINGLE_ENTITY)) {
       throw new IllegalStateException(
-          "Non-body HTTP method cannot contain @SingleEntity or @TypedBytes.");
+          "Non-body HTTP method cannot contain @SingleEntity or @TypedOutput.");
     }
     this.namedParams = namedParams;
   }

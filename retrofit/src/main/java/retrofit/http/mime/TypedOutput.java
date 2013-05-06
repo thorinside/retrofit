@@ -1,5 +1,5 @@
-// Copyright 2010 Square, Inc.
-package retrofit.io;
+// Copyright 2013 Square, Inc.
+package retrofit.http.mime;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -9,13 +9,17 @@ import java.io.OutputStream;
  *
  * @author Bob Lee (bob@squareup.com)
  */
-public interface TypedBytes {
+public interface TypedOutput {
+  /** Original filename.
+   *
+   * Used only for multipart requests, may be null. */
+  String fileName();
 
   /** Returns the mime type. */
   String mimeType();
 
   /** Length in bytes. */
-  int length();
+  long length();
 
   /** Writes these bytes to the given output stream. */
   void writeTo(OutputStream out) throws IOException;

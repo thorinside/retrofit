@@ -4,6 +4,7 @@ package retrofit.http;
 import java.io.IOException;
 import java.lang.reflect.Type;
 import retrofit.http.client.Response;
+import retrofit.http.mime.TypedInput;
 
 public class RetrofitError extends RuntimeException {
   static RetrofitError networkError(String url, IOException exception) {
@@ -29,16 +30,15 @@ public class RetrofitError extends RuntimeException {
   private final Converter converter;
   private final Type successType;
   private final boolean networkError;
-  private final Throwable exception;
 
   private RetrofitError(String url, Response response, Converter converter, Type successType,
       boolean networkError, Throwable exception) {
+    super(exception);
     this.url = url;
     this.response = response;
     this.converter = converter;
     this.successType = successType;
     this.networkError = networkError;
-    this.exception = exception;
   }
 
   /** The request URL which produced the error. */
@@ -61,7 +61,7 @@ public class RetrofitError extends RuntimeException {
    * the generic type of the supplied {@link Callback} parameter.
    */
   public Object getBody() {
-    byte[] body = response.getBody();
+    TypedInput body = response.getBody();
     if (body == null) {
       return null;
     }
@@ -74,7 +74,7 @@ public class RetrofitError extends RuntimeException {
 
   /** HTTP response body converted to specified {@code type}. */
   public Object getBodyAs(Type type) {
-    byte[] body = response.getBody();
+    TypedInput body = response.getBody();
     if (body == null) {
       return null;
     }
@@ -83,10 +83,5 @@ public class RetrofitError extends RuntimeException {
     } catch (ConversionException e) {
       throw new RuntimeException(e);
     }
-  }
-
-  /** The exception which caused this error, if any. */
-  public Throwable getException() {
-    return exception;
   }
 }

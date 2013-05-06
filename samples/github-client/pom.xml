@@ -7,16 +7,19 @@
 
   <parent>
     <groupId>com.squareup.retrofit</groupId>
-    <artifactId>parent</artifactId>
+    <artifactId>samples</artifactId>
     <version>1.0.0-SNAPSHOT</version>
     <relativePath>../pom.xml</relativePath>
   </parent>
 
-  <artifactId>samples</artifactId>
-  <name>Samples</name>
-  <packaging>pom</packaging>
+  <artifactId>sample-github-client</artifactId>
+  <name>Sample: GitHub Client</name>
 
-  <modules>
-    <module>github-client</module>
-  </modules>
+  <dependencies>
+    <dependency>
+      <groupId>com.squareup.retrofit</groupId>
+      <artifactId>retrofit</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+  </dependencies>
 </project>

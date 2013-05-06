@@ -1,28 +1,24 @@
 // Copyright 2012 Square, Inc.
 package retrofit.http;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.io.UnsupportedEncodingException;
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.lang.reflect.Type;
-import java.util.Collections;
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
-import java.util.logging.Level;
-import java.util.logging.Logger;
-import javax.inject.Provider;
-import org.apache.http.protocol.HTTP;
 import retrofit.http.Profiler.RequestInformation;
 import retrofit.http.client.Client;
 import retrofit.http.client.Request;
 import retrofit.http.client.Response;
-import retrofit.io.TypedBytes;
+import retrofit.http.mime.TypedByteArray;
+import retrofit.http.mime.TypedInput;
+import retrofit.http.mime.TypedOutput;
 
 import static retrofit.http.Utils.SynchronousExecutor;
 
@@ -33,38 +29,52 @@ import static retrofit.http.Utils.SynchronousExecutor;
  * @author Jake Wharton (jw@squareup.com)
  */
 public class RestAdapter {
-  private static final Logger LOGGER = Logger.getLogger(RestAdapter.class.getName());
   private static final int LOG_CHUNK_SIZE = 4000;
   static final String THREAD_PREFIX = "Retrofit-";
-  static final String UTF_8 = "UTF-8";
+  static final String IDLE_THREAD_NAME = THREAD_PREFIX + "Idle";
+
+  /** Simple logging abstraction for debug messages. */
+  public interface Log {
+    /** Log a debug message to the appropriate console. */
+    void log(String message);
+  }
 
   private final Server server;
-  private final Provider<Client> clientProvider;
+  private final Client.Provider clientProvider;
   private final Executor httpExecutor;
   private final Executor callbackExecutor;
-  private final Provider<List<Header>> headersProvider;
+  private final Headers headers;
   private final Converter converter;
   private final Profiler profiler;
+  private final Log log;
+  private volatile boolean debug;
 
-  private RestAdapter(Server server, Provider<Client> clientProvider, Executor httpExecutor,
-      Executor callbackExecutor, Provider<List<Header>> headersProvider, Converter converter,
-      Profiler profiler) {
+  private RestAdapter(Server server, Client.Provider clientProvider, Executor httpExecutor,
+      Executor callbackExecutor, Headers headers, Converter converter, Profiler profiler, Log log,
+      boolean debug) {
     this.server = server;
     this.clientProvider = clientProvider;
     this.httpExecutor = httpExecutor;
     this.callbackExecutor = callbackExecutor;
-    this.headersProvider = headersProvider;
+    this.headers = headers;
     this.converter = converter;
     this.profiler = profiler;
+    this.log = log;
+    this.debug = debug;
+  }
+
+  /** Toggle debug logging on and off. */
+  public void setDebug(boolean debug) {
+    this.debug = debug;
   }
 
   /**
    * Adapts a Java interface to a REST API.
-   * <p/>
+   * <p>
    * The relative path for a given method is obtained from an annotation on the method describing
-   * the request type. The names of URL parameters are retrieved from {@link javax.inject.Named}
+   * the request type. The names of URL parameters are retrieved from {@link Name}
    * annotations on the method parameters.
-   * <p/>
+   * <p>
    * HTTP requests happen in one of two ways:
    * <ul>
    * <li>On the provided HTTP {@link Executor} with callbacks marshaled to the callback
@@ -76,14 +86,14 @@ public class RestAdapter {
    * response will be converted to the method's return type using the specified
    * {@link Converter}.</li>
    * </ul>
-   * <p/>
+   * <p>
    * For example:
    * <pre>
    *   public interface MyApi {
    *     &#64;POST("go") // Asynchronous execution.
-   *     void go(@Named("a") String a, @Named("b") int b, Callback&lt;? super MyResult> callback);
+   *     void go(@Name("a") String a, @Name("b") int b, Callback&lt;? super MyResult> callback);
    *     &#64;POST("go") // Synchronous execution.
-   *     MyResult go(@Named("a") String a, @Named("b") int b);
+   *     MyResult go(@Name("a") String a, @Name("b") int b);
    *   }
    * </pre>
    *
@@ -130,8 +140,8 @@ public class RestAdapter {
       }
       Callback<?> callback = (Callback<?>) args[args.length - 1];
       httpExecutor.execute(new CallbackRunnable(callback, callbackExecutor) {
-        @Override public Object obtainResponse() {
-          return invokeRequest(methodDetails, args);
+        @Override public ResponseWrapper obtainResponse() {
+          return (ResponseWrapper) invokeRequest(methodDetails, args);
         }
       });
       return null; // Asynchronous methods should have return type of void.
@@ -146,20 +156,24 @@ public class RestAdapter {
     private Object invokeRequest(RestMethodInfo methodDetails, Object[] args) {
       methodDetails.init(); // Ensure all relevant method information has been loaded.
 
-      String url = server.apiUrl();
+      String serverUrl = server.getUrl();
+      String url = serverUrl; // Keep some url in case RequestBuilder throws an exception.
       try {
         Request request = new RequestBuilder(converter) //
-            .setApiUrl(server.apiUrl())
+            .setApiUrl(serverUrl)
             .setArgs(args)
-            .setHeaders(headersProvider.get())
+            .setHeaders(headers.get())
             .setMethodInfo(methodDetails)
             .build();
         url = request.getUrl();
-        LOGGER.fine("Sending " + request.getMethod() + " to " + url);
 
         if (!methodDetails.isSynchronous) {
           // If we are executing asynchronously then update the current thread with a useful name.
-          Thread.currentThread().setName(THREAD_PREFIX + url);
+          Thread.currentThread().setName(THREAD_PREFIX + url.substring(serverUrl.length()));
+        }
+
+        if (debug) {
+          request = logAndReplaceRequest(request);
         }
 
         Object profilerObject = null;
@@ -173,37 +187,47 @@ public class RestAdapter {
 
         int statusCode = response.getStatus();
         if (profiler != null) {
-          RequestInformation requestInfo = getRequestInfo(server, methodDetails, request);
+          RequestInformation requestInfo = getRequestInfo(serverUrl, methodDetails, request);
           profiler.afterCall(requestInfo, elapsedTime, statusCode, profilerObject);
         }
 
-        byte[] body = response.getBody();
-        if (LOGGER.isLoggable(Level.FINE)) {
-          logResponseBody(url, body, statusCode, elapsedTime);
-        }
-
-        List<Header> headers = response.getHeaders();
-        for (Header header : headers) {
-          if (HTTP.CONTENT_TYPE.equalsIgnoreCase(header.getName()) //
-              && !UTF_8.equalsIgnoreCase(Utils.parseCharset(header.getValue()))) {
-            throw new IOException("Only UTF-8 charset supported.");
-          }
+        if (debug) {
+          response = logAndReplaceResponse(url, response, elapsedTime);
         }
 
         Type type = methodDetails.type;
+
         if (statusCode >= 200 && statusCode < 300) { // 2XX == successful request
+          // Caller requested the raw Response object directly.
           if (type.equals(Response.class)) {
-            return response;
+            // Read the entire stream and replace with one backed by a byte[]
+            response = Utils.readBodyToBytesIfNecessary(response);
+
+            if (methodDetails.isSynchronous) {
+              return response;
+            }
+            return new ResponseWrapper(response, response);
           }
+
+          TypedInput body = response.getBody();
           if (body == null) {
-            return null;
+            return new ResponseWrapper(response, null);
           }
           try {
-            return converter.fromBody(body, type);
+            Object convert = converter.fromBody(body, type);
+            if (methodDetails.isSynchronous) {
+              return convert;
+            }
+            return new ResponseWrapper(response, convert);
           } catch (ConversionException e) {
+            // The response body was partially read by the converter. Replace it with null.
+            response = Utils.replaceResponseBody(response, null);
+
             throw RetrofitError.conversionError(url, response, converter, type, e);
           }
         }
+
+        response = Utils.readBodyToBytesIfNecessary(response);
         throw RetrofitError.httpError(url, response, converter, type);
       } catch (RetrofitError e) {
         throw e; // Pass through our own errors.
@@ -211,45 +235,112 @@ public class RestAdapter {
         throw RetrofitError.networkError(url, e);
       } catch (Throwable t) {
         throw RetrofitError.unexpectedError(url, t);
+      } finally {
+        if (!methodDetails.isSynchronous) {
+          Thread.currentThread().setName(IDLE_THREAD_NAME);
+        }
       }
     }
   }
 
-  private static void logResponseBody(String url, byte[] body, int statusCode, long elapsedTime)
-      throws UnsupportedEncodingException {
-    LOGGER.fine("---- HTTP " + statusCode + " from " + url + " (" + elapsedTime + "ms)");
-    String bodyString = new String(body, UTF_8);
-    for (int i = 0; i < body.length; i += LOG_CHUNK_SIZE) {
-      int end = Math.min(bodyString.length(), i + LOG_CHUNK_SIZE);
-      LOGGER.fine(bodyString.substring(i, end));
+  /** Log request headers and body. Consumes request body and returns identical replacement. */
+  private Request logAndReplaceRequest(Request request) throws IOException {
+    log.log(String.format("---> HTTP %s %s", request.getMethod(), request.getUrl()));
+
+    for (Header header : request.getHeaders()) {
+      log.log(header.getName() + ": " + header.getValue());
     }
-    LOGGER.fine("---- END HTTP");
+
+    TypedOutput body = request.getBody();
+    int bodySize = 0;
+    if (body != null) {
+      if (!request.getHeaders().isEmpty()) {
+        log.log("");
+      }
+
+      ByteArrayOutputStream baos = new ByteArrayOutputStream();
+      body.writeTo(baos);
+      byte[] bodyBytes = baos.toByteArray();
+      bodySize = bodyBytes.length;
+      String bodyMime = body.mimeType();
+      String bodyString = new String(bodyBytes, Utils.parseCharset(bodyMime));
+      for (int i = 0, len = bodyString.length(); i < len; i += LOG_CHUNK_SIZE) {
+        int end = Math.min(len, i + LOG_CHUNK_SIZE);
+        log.log(bodyString.substring(i, end));
+      }
+
+      body = new TypedByteArray(bodyMime, bodyBytes);
+    }
+
+    log.log(String.format("---> END HTTP (%s-byte body)", bodySize));
+
+    // Since we consumed the original request, return a new, identical one from its bytes.
+    return new Request(request.getMethod(), request.getUrl(), request.getHeaders(), body);
   }
 
-  private static Profiler.RequestInformation getRequestInfo(Server server,
+  /** Log response headers and body. Consumes response body and returns identical replacement. */
+  private Response logAndReplaceResponse(String url, Response response, long elapsedTime)
+      throws IOException {
+    log.log(String.format("<--- HTTP %s %s (%sms)", response.getStatus(), url, elapsedTime));
+
+    for (Header header : response.getHeaders()) {
+      log.log(header.getName() + ": " + header.getValue());
+    }
+
+    TypedInput body = response.getBody();
+    int bodySize = 0;
+    if (body != null) {
+      if (!response.getHeaders().isEmpty()) {
+        log.log("");
+      }
+
+      if (!(body instanceof TypedByteArray)) {
+        // Read the entire response body to we can log it and replace the original response
+        response = Utils.readBodyToBytesIfNecessary(response);
+        body = response.getBody();
+      }
+
+      byte[] bodyBytes = ((TypedByteArray) body).getBytes();
+      bodySize = bodyBytes.length;
+      String bodyMime = body.mimeType();
+      String bodyCharset = Utils.parseCharset(bodyMime);
+      String bodyString = new String(bodyBytes, bodyCharset);
+      for (int i = 0, len = bodyString.length(); i < len; i += LOG_CHUNK_SIZE) {
+        int end = Math.min(len, i + LOG_CHUNK_SIZE);
+        log.log(bodyString.substring(i, end));
+      }
+    }
+
+    log.log(String.format("<--- END HTTP (%s-byte body)", bodySize));
+
+    return response;
+  }
+
+  private static Profiler.RequestInformation getRequestInfo(String serverUrl,
       RestMethodInfo methodDetails, Request request) {
     long contentLength = 0;
     String contentType = null;
 
-    TypedBytes body = request.getBody();
+    TypedOutput body = request.getBody();
     if (body != null) {
       contentLength = body.length();
       contentType = body.mimeType();
     }
 
-    return new Profiler.RequestInformation(methodDetails.restMethod.value(), server.apiUrl(),
+    return new Profiler.RequestInformation(methodDetails.restMethod.value(), serverUrl,
         methodDetails.path, contentLength, contentType);
   }
 
   /**
    * Build a new {@link RestAdapter}.
-   * <p/>
+   * <p>
    * Calling the following methods is required before calling {@link #build()}:
    * <ul>
    * <li>{@link #setServer(Server)}</li>
-   * <li>{@link #setClient(javax.inject.Provider)}</li>
+   * <li>{@link #setClient(Client.Provider)}</li>
    * <li>{@link #setConverter(Converter)}</li>
    * </ul>
+   * <p>
    * If you are using asynchronous execution (i.e., with {@link Callback Callbacks}) the following
    * is also required:
    * <ul>
@@ -258,12 +349,14 @@ public class RestAdapter {
    */
   public static class Builder {
     private Server server;
-    private Provider<Client> clientProvider;
+    private Client.Provider clientProvider;
     private Executor httpExecutor;
     private Executor callbackExecutor;
-    private Provider<List<Header>> headersProvider;
+    private Headers headers;
     private Converter converter;
     private Profiler profiler;
+    private Log log;
+    private boolean debug;
 
     public Builder setServer(String endpoint) {
       if (endpoint == null) throw new NullPointerException("endpoint");
@@ -278,14 +371,14 @@ public class RestAdapter {
 
     public Builder setClient(final Client client) {
       if (client == null) throw new NullPointerException("client");
-      return setClient(new Provider<Client>() {
+      return setClient(new Client.Provider() {
         @Override public Client get() {
           return client;
         }
       });
     }
 
-    public Builder setClient(Provider<Client> clientProvider) {
+    public Builder setClient(Client.Provider clientProvider) {
       if (clientProvider == null) throw new NullPointerException("clientProvider");
       this.clientProvider = clientProvider;
       return this;
@@ -307,17 +400,9 @@ public class RestAdapter {
       return this;
     }
 
-    public Builder setHeaders(final List<Header> headers) {
-      return setHeaders(new Provider<List<Header>>() {
-        @Override public List<Header> get() {
-          return headers;
-        }
-      });
-    }
-
-    public Builder setHeaders(Provider<List<Header>> headersProvider) {
-      if (headersProvider == null) throw new NullPointerException("headersProvider");
-      this.headersProvider = headersProvider;
+    public Builder setHeaders(Headers headers) {
+      if (headers == null) throw new NullPointerException("headers");
+      this.headers = headers;
       return this;
     }
 
@@ -333,13 +418,24 @@ public class RestAdapter {
       return this;
     }
 
+    public Builder setLog(Log log) {
+      if (log == null) throw new NullPointerException("log");
+      this.log = log;
+      return this;
+    }
+
+    public Builder setDebug(boolean debug) {
+      this.debug = debug;
+      return this;
+    }
+
     public RestAdapter build() {
       if (server == null) {
         throw new IllegalArgumentException("Server may not be null.");
       }
       ensureSaneDefaults();
-      return new RestAdapter(server, clientProvider, httpExecutor, callbackExecutor,
-          headersProvider, converter, profiler);
+      return new RestAdapter(server, clientProvider, httpExecutor, callbackExecutor, headers,
+          converter, profiler, log, debug);
     }
 
     private void ensureSaneDefaults() {
@@ -355,12 +451,11 @@ public class RestAdapter {
       if (callbackExecutor == null) {
         callbackExecutor = Platform.get().defaultCallbackExecutor();
       }
-      if (headersProvider == null) {
-        headersProvider = new Provider<List<Header>>() {
-          @Override public List<Header> get() {
-            return Collections.emptyList();
-          }
-        };
+      if (log == null) {
+        log = Platform.get().defaultLog();
+      }
+      if (headers == null) {
+        headers = Headers.NONE;
       }
     }
   }
